@@ -15,6 +15,7 @@ var (
 )
 
 func ServeWs(rooms map[string]*room.Room, w http.ResponseWriter, r *http.Request) {
+
 	// Get room ID from query parameters
 	roomID := r.URL.Query().Get("room_id")
 	if roomID == "" {
@@ -29,11 +30,9 @@ func ServeWs(rooms map[string]*room.Room, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Generate unique ID for the client
-	clientID := uuid.New().String()
-
 	// Get or create room (thread-safe)
 	roomsMu.Lock()
+
 	currentRoom, exists := rooms[roomID]
 	if !exists {
 		currentRoom = room.NewRoom(roomID)
@@ -44,13 +43,15 @@ func ServeWs(rooms map[string]*room.Room, w http.ResponseWriter, r *http.Request
 	}
 	roomsMu.Unlock()
 
+	// Generate unique ID for the client
+	clientID := uuid.New().String()
+
 	log.Printf("New client %s connecting to room %s", clientID, roomID)
 
 	// Create a new client
 	c := client.NewClient(
 		clientID,
 		conn,
-		roomID,
 		currentRoom.UnregisterC,
 		currentRoom.MessageC,
 	)

@@ -1,62 +1,119 @@
 package message
 
+import (
+	"github.com/google/uuid"
+)
+
 type Message struct {
-	Type     string                 `json:"type"`
-	ID       string                 `json:"id,omitempty"`      // Sender client ID
-	PipeID   string                 `json:"pipe_id,omitempty"` // Target pipe ID
-	Payload  map[string]interface{} `json:"payload,omitempty"`
-	ClientID string                 `json:"client_id,omitempty"` // For client-specific messages
+	ID      string                 `json:"id,omitempty"`
+	Type    string                 `json:"type"`
+	Payload map[string]interface{} `json:"payload,omitempty"`
 }
 
 // Message types
 const (
-	TypeJoin        = "join"
-	TypeLeave       = "leave"
-	TypeSubscribe   = "subscribe"
-	TypeUnsubscribe = "unsubscribe"
-	TypeBroadcast   = "broadcast"
-	TypePipeCreate  = "pipe_create"
-	TypePipeDelete  = "pipe_delete"
+	PlayerJoin      = "player:join"
+	PlayerLeave     = "player:leave"
+	PlayerMovement  = "player:movement"
+	InterfacePanel  = "interface:panel"
+	InterfaceViewer = "interface:viewer"
+	ChatPrivate     = "chat:private"
+	ChatGroup       = "chat:group"
 	TypeError       = "error"
 )
 
-// NewJoinMessage creates a join message when a client joins
-func NewJoinMessage(clientID string, x, y int) *Message {
+// NewPlayerJoinMessage creates a join message when a client joins
+func NewPlayerJoinMessage(roomID string, clientID string, x, y int) *Message {
 	return &Message{
-		Type: TypeJoin,
-		ID:   clientID,
+		ID:   uuid.New().String(),
+		Type: PlayerJoin,
 		Payload: map[string]interface{}{
-			"x": x,
-			"y": y,
+			"pid": clientID,
+			"x":   x,
+			"y":   y,
 		},
 	}
 }
 
-// NewLeaveMessage creates a leave message when a client disconnects
-func NewLeaveMessage(clientID string) *Message {
+// NewPlayerLeaveMessage creates a leave message when a client disconnects
+func NewPlayerLeaveMessage(roomID string, clientID string) *Message {
 	return &Message{
-		Type: TypeLeave,
-		ID:   clientID,
+		ID:   uuid.New().String(),
+		Type: PlayerLeave,
+		Payload: map[string]interface{}{
+			"pid": clientID,
+		},
+	}
+}
+
+// NewPlayerMovementMessage creates a movement message when a client moves
+func NewPlayerMovementMessage(roomID string, clientID string, x, y, speed int) *Message {
+	return &Message{
+		ID:   uuid.New().String(),
+		Type: PlayerMovement,
+		Payload: map[string]interface{}{
+			"pid":   clientID,
+			"x":     x,
+			"y":     y,
+			"speed": speed,
+		},
+	}
+}
+
+func NewInterfacePanelMessage(roomID string, panelId string, senderId string, recieverId string, subtype string, status string) *Message {
+	if status == "" {
+		status = "requested"
+	}
+	return &Message{
+		ID:   uuid.New().String(),
+		Type: InterfacePanel,
+		Payload: map[string]interface{}{
+			"panelId":    panelId,
+			"senderId":   senderId,
+			"recieverId": recieverId,
+			"subType":    subtype,
+			"status":     status,
+		},
+	}
+}
+
+func NewChatGroupMessage(subtype string, roomID string, senderId string, groupId string, content string) *Message {
+	if groupId == "" {
+		groupId = "main"
+	}
+
+	return &Message{
+		ID:   uuid.New().String(),
+		Type: ChatGroup,
+		Payload: map[string]interface{}{
+			"subType":  subtype,
+			"senderId": senderId,
+			"groupId":  groupId,
+			"content":  content,
+		},
+	}
+}
+
+func NewChatPrivateMessage(subType string, roomID string, senderId string, recieverId string, content string) *Message {
+	return &Message{
+		ID:   uuid.New().String(),
+		Type: ChatPrivate,
+		Payload: map[string]interface{}{
+			"subType":    subType,
+			"senderId":   senderId,
+			"recieverId": recieverId,
+			"content":    content,
+		},
 	}
 }
 
 // NewErrorMessage creates an error message
 func NewErrorMessage(errMsg string) *Message {
 	return &Message{
+		ID:   uuid.New().String(),
 		Type: TypeError,
 		Payload: map[string]interface{}{
 			"message": errMsg,
-		},
-	}
-}
-
-// NewConfirmationMessage creates a confirmation message for pipe operations
-func NewConfirmationMessage(msgType, pipeID, status string) *Message {
-	return &Message{
-		Type:   msgType,
-		PipeID: pipeID,
-		Payload: map[string]interface{}{
-			"status": status,
 		},
 	}
 }

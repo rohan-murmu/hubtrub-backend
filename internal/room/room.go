@@ -1,7 +1,6 @@
 package room
 
 import (
-	"encoding/json"
 	"log"
 	"math/rand"
 	"sync"
@@ -14,7 +13,7 @@ import (
 type Room struct {
 	ID          string                    // Unique room ID
 	Clients     map[string]*client.Client // Registered clients (clientID -> Client)
-	Pipes       map[string]*pipe.Pipe     // Pipes within the room (pipeID -> Pipe)
+	Pipes       map[string]*pipe.Pipe     // Pipes in the room (pipeID -> Pipe)
 	RegisterC   chan *client.Client       // Channel for registering new clients
 	UnregisterC chan string               // Channel for unregistering clients (clientID)
 	MessageC    chan *message.Message     // Channel for processing messages
@@ -34,28 +33,28 @@ func NewRoom(roomID string) *Room {
 		isRunning:   false,                            // Initially not running
 	}
 
-	// Create static pipes
-	r.createStaticPipes()
+	r.createPipes()
 
 	return r
 }
 
-// createStaticPipes creates default pipes that cannot be deleted
-func (r *Room) createStaticPipes() {
-	staticPipes := []string{pipe.DefaultPipe, pipe.MotionPipe, pipe.ChatPipe}
+// createPipes creates the three static pipes: PlayerPipe, InterfacePipe, and ChatPipe
+func (r *Room) createPipes() {
+	// Create the three static pipes
+	pipes := []string{pipe.PlayerPipe, pipe.InterfacePipe, pipe.ChatPipe}
 
-	for _, pipeID := range staticPipes {
-		p := pipe.NewPipe(pipeID, true)
-		r.Pipes[pipeID] = p
+	for _, pipeType := range pipes {
+		p := pipe.NewPipe(pipeType)
+		r.Pipes[pipeType] = p
 		// Start pipe in a separate goroutine
 		go p.Run(r.sendToClient)
 	}
 
-	log.Printf("Room %s: Created static pipes: %v", r.ID, staticPipes)
+	log.Printf("Room %s: Created static pipes: %v", r.ID, pipes)
 }
 
 // sendToClient is a helper function to send messages to a specific client
-func (r *Room) sendToClient(clientID string, data []byte) {
+func (r *Room) sendToClient(clientID string, data *message.Message) {
 	if client, ok := r.Clients[clientID]; ok {
 		select {
 		case client.Send <- data:
@@ -66,7 +65,7 @@ func (r *Room) sendToClient(clientID string, data []byte) {
 }
 
 // broadcastToAll sends a message to all clients in the room
-func (r *Room) broadcastToAll(data []byte, excludeClientID string) {
+func (r *Room) broadcastToAll(data *message.Message, excludeClientID string) {
 	for id, c := range r.Clients {
 		if id != excludeClientID {
 			select {
@@ -92,6 +91,7 @@ func (r *Room) Run() {
 
 	for {
 		select {
+
 		// Handle client registration
 		case client := <-r.RegisterC:
 			r.Clients[client.ID] = client
@@ -101,17 +101,18 @@ func (r *Room) Run() {
 			x := rand.Intn(500)
 			y := rand.Intn(500)
 
-			// Auto-subscribe to default pipe
-			if defaultPipe, ok := r.Pipes[pipe.DefaultPipe]; ok {
-				defaultPipe.SubscribeC <- client.ID
-				client.Subscriptions[pipe.DefaultPipe] = true
+			// Auto-subscribe to all three static pipes
+			for _, pipeType := range []string{pipe.PlayerPipe, pipe.InterfacePipe, pipe.ChatPipe} {
+				if p, ok := r.Pipes[pipeType]; ok {
+					p.SubscribeC <- client.ID
+					client.Subscriptions[pipeType] = true
+				}
 			}
 
-			// Broadcast join message to all other clients via default pipe
-			joinMsg := message.NewJoinMessage(client.ID, x, y)
-			if data, err := json.Marshal(joinMsg); err == nil {
-				client.Send <- data
-				r.broadcastToAll(data, client.ID)
+			// Broadcast join message to all other clients
+			joinMsg := message.NewPlayerJoinMessage(r.ID, client.ID, x, y)
+			if playerPipe, ok := r.Pipes[pipe.PlayerPipe]; ok {
+				playerPipe.BroadcastC <- joinMsg
 			}
 
 		// Handle client unregistration
@@ -127,10 +128,8 @@ func (r *Room) Run() {
 				}
 
 				// Broadcast leave message to all remaining clients
-				leaveMsg := message.NewLeaveMessage(clientID)
-				if data, err := json.Marshal(leaveMsg); err == nil {
-					r.broadcastToAll(data, clientID)
-				}
+				leaveMsg := message.NewPlayerLeaveMessage(r.ID, clientID)
+				r.broadcastToAll(leaveMsg, clientID)
 
 				// Remove client and close send channel
 				delete(r.Clients, clientID)
@@ -139,170 +138,36 @@ func (r *Room) Run() {
 
 		// Handle messages from clients
 		case msg := <-r.MessageC:
+			log.Printf("Room %s: Received message of type %s", r.ID, msg.Type)
 			r.handleMessage(msg)
 		}
 	}
 }
 
-// handleMessage processes different types of messages
+// handleMessage processes different types of messages and routes them to the appropriate pipe
 func (r *Room) handleMessage(msg *message.Message) {
-	switch msg.Type {
-	case message.TypeSubscribe:
-		r.handleSubscribe(msg)
-	case message.TypeUnsubscribe:
-		r.handleUnsubscribe(msg)
-	case message.TypePipeCreate:
-		r.handlePipeCreate(msg)
-	case message.TypePipeDelete:
-		r.handlePipeDelete(msg)
-	case message.TypeBroadcast:
-		r.handleBroadcast(msg)
-	default:
-		// Default behavior: broadcast to default pipe
-		if msg.PipeID == "" {
-			msg.PipeID = pipe.DefaultPipe
-		}
-		r.handleBroadcast(msg)
-	}
-}
-
-// handleSubscribe subscribes a client to a pipe
-func (r *Room) handleSubscribe(msg *message.Message) {
-	pipeID := msg.PipeID
-	clientID := msg.ID
-
-	if pipeID == "" {
-		r.sendError(clientID, "pipe_id is required for subscription")
+	// Validate message has required fields
+	if msg.Type == "" {
+		log.Printf("Invalid message: missing type")
 		return
 	}
 
-	p, exists := r.Pipes[pipeID]
-	if !exists {
-		r.sendError(clientID, "pipe not found: "+pipeID)
-		return
-	}
-
-	if client, ok := r.Clients[clientID]; ok {
-		client.Subscriptions[pipeID] = true
-		p.SubscribeC <- clientID
-	}
-}
-
-// handleUnsubscribe unsubscribes a client from a pipe
-func (r *Room) handleUnsubscribe(msg *message.Message) {
-	pipeID := msg.PipeID
-	clientID := msg.ID
-
-	if pipeID == "" {
-		r.sendError(clientID, "pipe_id is required for unsubscription")
-		return
-	}
-
-	p, exists := r.Pipes[pipeID]
-	if !exists {
-		r.sendError(clientID, "pipe not found: "+pipeID)
-		return
-	}
-
-	if client, ok := r.Clients[clientID]; ok {
-		delete(client.Subscriptions, pipeID)
-		p.UnsubscribeC <- clientID
-	}
-}
-
-// handlePipeCreate creates a new dynamic pipe
-func (r *Room) handlePipeCreate(msg *message.Message) {
-	pipeID := msg.PipeID
-	clientID := msg.ID
-
-	if pipeID == "" {
-		r.sendError(clientID, "pipe_id is required for pipe creation")
-		return
-	}
-
-	if _, exists := r.Pipes[pipeID]; exists {
-		r.sendError(clientID, "pipe already exists: "+pipeID)
-		return
-	}
-
-	// Create new dynamic pipe
-	p := pipe.NewPipe(pipeID, false)
-	r.Pipes[pipeID] = p
-	go p.Run(r.sendToClient)
-
-	log.Printf("Room %s: Dynamic pipe %s created by client %s", r.ID, pipeID, clientID)
-
-	// Send confirmation to creator
-	confirmMsg := message.NewConfirmationMessage(message.TypePipeCreate, pipeID, "created")
-	if data, err := json.Marshal(confirmMsg); err == nil {
-		r.sendToClient(clientID, data)
-	}
-}
-
-// handlePipeDelete deletes a dynamic pipe
-func (r *Room) handlePipeDelete(msg *message.Message) {
-	pipeID := msg.PipeID
-	clientID := msg.ID
-
-	if pipeID == "" {
-		r.sendError(clientID, "pipe_id is required for pipe deletion")
-		return
-	}
-
-	p, exists := r.Pipes[pipeID]
-	if !exists {
-		r.sendError(clientID, "pipe not found: "+pipeID)
-		return
-	}
-
-	if p.IsStatic {
-		r.sendError(clientID, "cannot delete static pipe: "+pipeID)
-		return
-	}
-
-	// Unsubscribe all clients from this pipe
-	for cID, client := range r.Clients {
-		if _, subscribed := client.Subscriptions[pipeID]; subscribed {
-			delete(client.Subscriptions, pipeID)
-			// Notify client about pipe deletion
-			notifyMsg := message.NewConfirmationMessage(message.TypePipeDelete, pipeID, "deleted")
-			if data, err := json.Marshal(notifyMsg); err == nil {
-				r.sendToClient(cID, data)
-			}
-		}
-	}
-
-	delete(r.Pipes, pipeID)
-	log.Printf("Room %s: Dynamic pipe %s deleted by client %s", r.ID, pipeID, clientID)
-}
-
-// handleBroadcast broadcasts a message to a specific pipe
-func (r *Room) handleBroadcast(msg *message.Message) {
-	pipeID := msg.PipeID
-	if pipeID == "" {
-		pipeID = pipe.DefaultPipe
-	}
-
-	p, exists := r.Pipes[pipeID]
-	if !exists {
-		r.sendError(msg.ID, "pipe not found: "+pipeID)
-		return
-	}
-
-	// Marshal message and send to pipe
-	if data, err := json.Marshal(msg); err == nil {
+	// Determine which pipe this message should go to based on message type prefix
+	pipeType := pipe.GetPipeTypeFromMessage(msg.Type)
+	// Send message to the appropriate pipe
+	if p, ok := r.Pipes[pipeType]; ok {
 		select {
-		case p.BroadcastC <- data:
+		case p.BroadcastC <- msg:
 		default:
-			log.Printf("Pipe %s broadcast buffer full, message dropped", pipeID)
+			log.Printf("Pipe %s broadcast buffer full, message dropped", pipeType)
 		}
+	} else {
+		log.Printf("Pipe %s not found for message type %s", pipeType, msg.Type)
 	}
 }
 
 // sendError sends an error message to a client
 func (r *Room) sendError(clientID string, errMsg string) {
 	errorMsg := message.NewErrorMessage(errMsg)
-	if data, err := json.Marshal(errorMsg); err == nil {
-		r.sendToClient(clientID, data)
-	}
+	r.sendToClient(clientID, errorMsg)
 }
