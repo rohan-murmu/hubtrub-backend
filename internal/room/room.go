@@ -53,26 +53,13 @@ func (r *Room) createPipes() {
 	log.Printf("Room %s: Created static pipes: %v", r.ID, pipes)
 }
 
-// sendToClient is a helper function to send messages to a specific client
+// sendToClient sends a message to a specific client
 func (r *Room) sendToClient(clientID string, data *message.Message) {
 	if client, ok := r.Clients[clientID]; ok {
 		select {
 		case client.Send <- data:
 		default:
 			log.Printf("Client %s send buffer full, message dropped", clientID)
-		}
-	}
-}
-
-// broadcastToAll sends a message to all clients in the room
-func (r *Room) broadcastToAll(data *message.Message, excludeClientID string) {
-	for id, c := range r.Clients {
-		if id != excludeClientID {
-			select {
-			case c.Send <- data:
-			default:
-				log.Printf("Client %s send buffer full, message dropped", id)
-			}
 		}
 	}
 }
@@ -91,7 +78,6 @@ func (r *Room) Run() {
 
 	for {
 		select {
-
 		// Handle client registration
 		case client := <-r.RegisterC:
 			r.Clients[client.ID] = client
@@ -109,10 +95,13 @@ func (r *Room) Run() {
 				}
 			}
 
-			// Broadcast join message to all other clients
-			joinMsg := message.NewPlayerJoinMessage(r.ID, client.ID, x, y)
-			if playerPipe, ok := r.Pipes[pipe.PlayerPipe]; ok {
-				playerPipe.BroadcastC <- joinMsg
+			// Send join message: to self (is_self true), to others (is_self false) via player pipe
+			if p, ok := r.Pipes[pipe.PlayerPipe]; ok {
+				joinMsgSelf := message.NewPlayerJoinMessage(client.ID, x, y, true)
+				p.BroadcastC <- joinMsgSelf
+
+				joinMsgOthers := message.NewPlayerJoinMessage(client.ID, x, y, false)
+				p.BroadcastC <- joinMsgOthers
 			}
 
 		// Handle client unregistration
@@ -127,43 +116,41 @@ func (r *Room) Run() {
 					}
 				}
 
-				// Broadcast leave message to all remaining clients
-				leaveMsg := message.NewPlayerLeaveMessage(r.ID, clientID)
-				r.broadcastToAll(leaveMsg, clientID)
+				// Broadcast leave message to all remaining clients via player pipe
+				if p, ok := r.Pipes[pipe.PlayerPipe]; ok {
+					leaveMsg := message.NewPlayerLeaveMessage(clientID)
+					p.BroadcastC <- leaveMsg
+				}
 
 				// Remove client and close send channel
 				delete(r.Clients, clientID)
 				close(client.Send)
+				log.Printf("Room %s: Client %s unregistered", r.ID, clientID)
 			}
 
 		// Handle messages from clients
 		case msg := <-r.MessageC:
-			log.Printf("Room %s: Received message of type %s", r.ID, msg.Type)
+			log.Printf("Room %s, Pipe %s: Received message of type %s", r.ID, pipe.GetPipeTypeFromMessage(msg.Type), msg.Type)
 			r.handleMessage(msg)
 		}
 	}
 }
 
-// handleMessage processes different types of messages and routes them to the appropriate pipe
+// handleMessage routes messages to the correct pipe for broadcasting
 func (r *Room) handleMessage(msg *message.Message) {
-	// Validate message has required fields
 	if msg.Type == "" {
 		log.Printf("Invalid message: missing type")
 		return
 	}
 
-	// Determine which pipe this message should go to based on message type prefix
 	pipeType := pipe.GetPipeTypeFromMessage(msg.Type)
-	// Send message to the appropriate pipe
-	if p, ok := r.Pipes[pipeType]; ok {
-		select {
-		case p.BroadcastC <- msg:
-		default:
-			log.Printf("Pipe %s broadcast buffer full, message dropped", pipeType)
-		}
-	} else {
+	p, ok := r.Pipes[pipeType]
+	if !ok {
 		log.Printf("Pipe %s not found for message type %s", pipeType, msg.Type)
+		return
 	}
+
+	p.BroadcastC <- msg
 }
 
 // sendError sends an error message to a client

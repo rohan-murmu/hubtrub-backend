@@ -23,20 +23,21 @@ const (
 )
 
 // NewPlayerJoinMessage creates a join message when a client joins
-func NewPlayerJoinMessage(roomID string, clientID string, x, y int) *Message {
+func NewPlayerJoinMessage(clientID string, x, y int, is_self bool) *Message {
 	return &Message{
 		ID:   uuid.New().String(),
 		Type: PlayerJoin,
 		Payload: map[string]interface{}{
-			"pid": clientID,
-			"x":   x,
-			"y":   y,
+			"pid":     clientID,
+			"x":       x,
+			"y":       y,
+			"is_self": is_self,
 		},
 	}
 }
 
 // NewPlayerLeaveMessage creates a leave message when a client disconnects
-func NewPlayerLeaveMessage(roomID string, clientID string) *Message {
+func NewPlayerLeaveMessage(clientID string) *Message {
 	return &Message{
 		ID:   uuid.New().String(),
 		Type: PlayerLeave,
@@ -47,20 +48,20 @@ func NewPlayerLeaveMessage(roomID string, clientID string) *Message {
 }
 
 // NewPlayerMovementMessage creates a movement message when a client moves
-func NewPlayerMovementMessage(roomID string, clientID string, x, y, speed int) *Message {
+func NewPlayerMovementMessage(clientID string, x, y, dir string) *Message {
 	return &Message{
 		ID:   uuid.New().String(),
 		Type: PlayerMovement,
 		Payload: map[string]interface{}{
-			"pid":   clientID,
-			"x":     x,
-			"y":     y,
-			"speed": speed,
+			"pid": clientID,
+			"x":   x,
+			"y":   y,
+			"dir": dir,
 		},
 	}
 }
 
-func NewInterfacePanelMessage(roomID string, panelId string, senderId string, recieverId string, subtype string, status string) *Message {
+func NewInterfacePanelMessage(panelId string, senderId string, recieverId string, subtype string, status string) *Message {
 	if status == "" {
 		status = "requested"
 	}
@@ -77,7 +78,7 @@ func NewInterfacePanelMessage(roomID string, panelId string, senderId string, re
 	}
 }
 
-func NewChatGroupMessage(subtype string, roomID string, senderId string, groupId string, content string) *Message {
+func NewChatGroupMessage(subtype string, senderId string, groupId string, content string) *Message {
 	if groupId == "" {
 		groupId = "main"
 	}
@@ -94,7 +95,7 @@ func NewChatGroupMessage(subtype string, roomID string, senderId string, groupId
 	}
 }
 
-func NewChatPrivateMessage(subType string, roomID string, senderId string, recieverId string, content string) *Message {
+func NewChatPrivateMessage(subType string, senderId string, recieverId string, content string) *Message {
 	return &Message{
 		ID:   uuid.New().String(),
 		Type: ChatPrivate,

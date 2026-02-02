@@ -48,26 +48,60 @@ func GetPipeTypeFromMessage(msgType string) string {
 
 // Run starts the pipe's event loop
 func (p *Pipe) Run(sendToClient func(string, *message.Message)) {
+	// Helper functions for delivery
+	sendToAll := func(msg *message.Message) {
+		for clientID := range p.Subscribers {
+			sendToClient(clientID, msg)
+		}
+	}
+	sendToAllExcept := func(msg *message.Message, exceptID string) {
+		for clientID := range p.Subscribers {
+			if clientID != exceptID {
+				sendToClient(clientID, msg)
+			}
+		}
+	}
+	sendToSelf := func(msg *message.Message, selfID string) {
+		if _, ok := p.Subscribers[selfID]; ok {
+			sendToClient(selfID, msg)
+		}
+	}
+
 	log.Printf("Pipe %s started", p.ID)
 	for {
 		select {
-
-		// Subscribe a client to the pipe
 		case clientID := <-p.SubscribeC:
 			p.Subscribers[clientID] = true
 			log.Printf("Client %s subscribed to pipe %s", clientID, p.ID)
 
-		// Unsubscribe a client from the pipe
 		case clientID := <-p.UnsubscribeC:
 			if _, ok := p.Subscribers[clientID]; ok {
 				delete(p.Subscribers, clientID)
 				log.Printf("Client %s unsubscribed from pipe %s", clientID, p.ID)
 			}
 
-		// Broadcast a message to all subscribers
 		case msg := <-p.BroadcastC:
-			for clientID := range p.Subscribers {
-				sendToClient(clientID, msg)
+			switch p.ID {
+			case PlayerPipe:
+				switch msg.Type {
+				case message.PlayerJoin:
+					pid, _ := msg.Payload["pid"].(string)
+					isSelf, _ := msg.Payload["is_self"].(bool)
+					if isSelf {
+						sendToSelf(msg, pid)
+					} else {
+						sendToAllExcept(msg, pid)
+					}
+				case message.PlayerMovement, message.PlayerLeave:
+					pid, _ := msg.Payload["pid"].(string)
+					sendToAllExcept(msg, pid)
+				default:
+					sendToAll(msg)
+				}
+			case InterfacePipe, ChatPipe:
+				sendToAll(msg)
+			default:
+				sendToAll(msg)
 			}
 		}
 	}
