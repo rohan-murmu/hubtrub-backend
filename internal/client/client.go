@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/scythrine05/hubtrub-server/internal/message"
@@ -15,12 +16,11 @@ import (
 
 // Client represents a WebSocket client connected to a room
 type Client struct {
-	ID            string                // Unique client ID
-	Conn          *websocket.Conn       // The WebSocket connection
-	Send          chan *message.Message // Channel to send messages to the client
-	Subscriptions map[string]bool       // Track which pipes this client is subscribed to
-	UnregisterC   chan string           // Channel to notify room to unregister
-	MessageC      chan *message.Message // Channel to send messages to room
+	ID       string          // Unique client ID
+	Conn     *websocket.Conn // The WebSocket connection
+	Send     chan []byte     // Buffered channel for sending raw JSON messages
+	closedMu sync.Mutex      // Protects closed flag
+	closed   bool            // Flag to prevent double-close of Send channel
 }
 
 var upgrader = websocket.Upgrader{
@@ -35,24 +35,41 @@ func Upgrader() *websocket.Upgrader {
 	return &upgrader
 }
 
-// NewClient creates a new client
-func NewClient(id string, conn *websocket.Conn, unregisterC chan string, messageC chan *message.Message) *Client {
+// NewClient creates a new client.
+// The room is responsible for passing channels to the client.
+func NewClient(id string, conn *websocket.Conn) *Client {
 	return &Client{
-		ID:            id,
-		Conn:          conn,
-		Send:          make(chan *message.Message, util.SendBufferSize),
-		Subscriptions: make(map[string]bool),
-		UnregisterC:   unregisterC,
-		MessageC:      messageC,
+		ID:     id,
+		Conn:   conn,
+		Send:   make(chan []byte, 256), // Buffered channel for raw []byte messages
+		closed: false,
 	}
 }
 
-// ReadPump reads messages from the client's WebSocket connection
-func (c *Client) ReadPump() {
+// Close safely closes the client's send channel
+// This method prevents panic from double-closing the channel
+func (c *Client) Close() {
+	c.closedMu.Lock()
+	defer c.closedMu.Unlock()
+	
+	if !c.closed {
+		c.closed = true
+		close(c.Send)
+		c.Conn.Close()
+	}
+}
+
+// ReadPump reads messages from the client's WebSocket connection.
+// It parses JSON messages and sends them to the room's MessageC channel.
+// On disconnect, it notifies the room to unregister this client.
+func (c *Client) ReadPump(unregisterC chan *Client, messageC chan interface{}) {
 	defer func() {
-		c.UnregisterC <- c.ID
+		log.Printf("Client %s: ReadPump exiting, sending to unregisterC", c.ID)
+		unregisterC <- c
 		c.Conn.Close()
 	}()
+
+	log.Printf("Client %s: ReadPump started", c.ID)
 
 	// Set up connection parameters
 	c.Conn.SetReadLimit(util.MaxMessageSize)
@@ -69,6 +86,7 @@ func (c *Client) ReadPump() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket error for client %s: %v", c.ID, err)
 			}
+			log.Printf("Client %s: ReadMessage returned error: %v, exiting ReadPump", c.ID, err)
 			break
 		}
 		rawMessage = bytes.TrimSpace(rawMessage)
@@ -77,7 +95,6 @@ func (c *Client) ReadPump() {
 		if len(rawMessage) == 0 {
 			continue
 		}
-
 		// Parse incoming message
 		var msg message.Message
 		if err := json.Unmarshal(rawMessage, &msg); err != nil {
@@ -98,26 +115,27 @@ func (c *Client) ReadPump() {
 
 		// Send message to room for processing
 		select {
-		case c.MessageC <- &msg:
+		case messageC <- &msg:
 		default:
 			log.Printf("Client %s: Room message buffer full, message dropped", c.ID)
 		}
 	}
 }
 
-// WritePump writes messages to the WebSocket connection
+// WritePump writes messages from the Send channel to the WebSocket connection.
+// It also sends periodic ping messages to keep the connection alive.
 func (c *Client) WritePump() {
 	// Set up ticker for ping messages
 	ticker := time.NewTicker(util.PingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.Conn.Close()
+		c.Close()
 	}()
 
 	for {
 		select {
 		// Send message to client
-		case message, ok := <-c.Send:
+		case data, ok := <-c.Send:
 			if !ok {
 				// Channel closed, send close message and return
 				c.Conn.WriteMessage(
@@ -129,15 +147,8 @@ func (c *Client) WritePump() {
 
 			c.Conn.SetWriteDeadline(time.Now().Add(util.WriteWait))
 
-			// Marshal message to JSON
-			messageBytes, err := json.Marshal(message)
-			if err != nil {
-				log.Printf("Client %s: Failed to marshal message: %v", c.ID, err)
-				continue
-			}
-
-			// Send the message
-			if err := c.Conn.WriteMessage(websocket.TextMessage, messageBytes); err != nil {
+			// Send the raw []byte message directly
+			if err := c.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
 				log.Printf("Client %s: Failed to write message: %v", c.ID, err)
 				return
 			}

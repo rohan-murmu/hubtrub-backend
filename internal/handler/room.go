@@ -27,13 +27,13 @@ func (h *RoomHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	// Get authenticated client from context
 	clientUserName, ok := middleware.GetClientUserNameFromContext(r)
 	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		RespondError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	var room model.Room
 	if err := json.NewDecoder(r.Body).Decode(&room); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		RespondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -43,25 +43,22 @@ func (h *RoomHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
 	room.RoomAdmin = clientUserName
 
 	if err := h.service.CreateRoom(&room); err != nil {
-		http.Error(w, "Failed to create room", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to create room")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(room)
+	RespondSuccess(w, http.StatusCreated, room)
 }
 
 // GetAllRooms handles GET /room
 func (h *RoomHandler) GetAllRooms(w http.ResponseWriter, r *http.Request) {
 	rooms, err := h.service.GetAllRooms()
 	if err != nil {
-		http.Error(w, "Failed to fetch rooms", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to fetch rooms")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(rooms)
+	RespondSuccess(w, http.StatusOK, rooms)
 }
 
 // GetRoomByID handles GET /room/:room_id
@@ -70,12 +67,11 @@ func (h *RoomHandler) GetRoomByID(w http.ResponseWriter, r *http.Request) {
 
 	room, err := h.service.GetRoomByID(roomID)
 	if err != nil {
-		http.Error(w, "Room not found", http.StatusNotFound)
+		RespondError(w, http.StatusNotFound, "Room not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(room)
+	RespondSuccess(w, http.StatusOK, room)
 }
 
 // UpdateRoom handles PUT /room/:room_id - only admin can update
@@ -85,25 +81,25 @@ func (h *RoomHandler) UpdateRoom(w http.ResponseWriter, r *http.Request) {
 	// Get authenticated client from context
 	clientUserName, ok := middleware.GetClientUserNameFromContext(r)
 	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		RespondError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	// Verify user is the room admin
 	existingRoom, err := h.service.GetRoomByID(roomID)
 	if err != nil {
-		http.Error(w, "Room not found", http.StatusNotFound)
+		RespondError(w, http.StatusNotFound, "Room not found")
 		return
 	}
 
 	if existingRoom.RoomAdmin != clientUserName {
-		http.Error(w, "Forbidden: Only room admin can update", http.StatusForbidden)
+		RespondError(w, http.StatusForbidden, "Forbidden: Only room admin can update")
 		return
 	}
 
 	var room model.Room
 	if err := json.NewDecoder(r.Body).Decode(&room); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		RespondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -112,12 +108,11 @@ func (h *RoomHandler) UpdateRoom(w http.ResponseWriter, r *http.Request) {
 	room.RoomAdmin = clientUserName
 
 	if err := h.service.UpdateRoom(roomID, &room); err != nil {
-		http.Error(w, "Failed to update room", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to update room")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(room)
+	RespondSuccess(w, http.StatusOK, room)
 }
 
 // DeleteRoom handles DELETE /room/:room_id - only admin can delete
@@ -127,28 +122,27 @@ func (h *RoomHandler) DeleteRoom(w http.ResponseWriter, r *http.Request) {
 	// Get authenticated client from context
 	clientUserName, ok := middleware.GetClientUserNameFromContext(r)
 	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		RespondError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
 	// Verify user is the room admin
 	room, err := h.service.GetRoomByID(roomID)
 	if err != nil {
-		http.Error(w, "Room not found", http.StatusNotFound)
+		RespondError(w, http.StatusNotFound, "Room not found")
 		return
 	}
 
 	if room.RoomAdmin != clientUserName {
-		http.Error(w, "Forbidden: Only room admin can delete", http.StatusForbidden)
+		RespondError(w, http.StatusForbidden, "Forbidden: Only room admin can delete")
 		return
 	}
 
 	if err := h.service.DeleteRoom(roomID); err != nil {
-		http.Error(w, "Failed to delete room", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to delete room")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -15,15 +15,26 @@ const (
 	PlayerJoin      = "player:join"
 	PlayerLeave     = "player:leave"
 	PlayerMovement  = "player:movement"
+	WorldState      = "world:state"
 	InterfacePanel  = "interface:panel"
 	InterfaceViewer = "interface:viewer"
 	ChatPrivate     = "chat:private"
 	ChatGroup       = "chat:group"
+	ChatPublic      = "chat:public"
 	TypeError       = "error"
 )
 
+// Chat subtypes
+const (
+	ChatSubtypeRequest = "request"
+	ChatSubtypeRespond = "respond"
+	ChatSubtypeJoin    = "join"
+	ChatSubtypeMessage = "message"
+	ChatSubtypeLeave   = "leave"
+)
+
 // NewPlayerJoinMessage creates a join message when a client joins
-func NewPlayerJoinMessage(clientID string, x, y int, is_self bool) *Message {
+func NewPlayerJoinMessage(clientID string, x int, y int, is_self bool) *Message {
 	return &Message{
 		ID:   uuid.New().String(),
 		Type: PlayerJoin,
@@ -48,7 +59,7 @@ func NewPlayerLeaveMessage(clientID string) *Message {
 }
 
 // NewPlayerMovementMessage creates a movement message when a client moves
-func NewPlayerMovementMessage(clientID string, x, y, dir string) *Message {
+func NewPlayerMovementMessage(clientID string, x int, y int, dir string) *Message {
 	return &Message{
 		ID:   uuid.New().String(),
 		Type: PlayerMovement,
@@ -80,9 +91,8 @@ func NewInterfacePanelMessage(panelId string, senderId string, recieverId string
 
 func NewChatGroupMessage(subtype string, senderId string, groupId string, content string) *Message {
 	if groupId == "" {
-		groupId = "main"
+		groupId = "public-group-chat"
 	}
-
 	return &Message{
 		ID:   uuid.New().String(),
 		Type: ChatGroup,
@@ -104,6 +114,19 @@ func NewChatPrivateMessage(subType string, senderId string, recieverId string, c
 			"senderId":   senderId,
 			"recieverId": recieverId,
 			"content":    content,
+		},
+	}
+}
+
+// NewChatPublicMessage creates a public chat message visible to all clients in the room
+func NewChatPublicMessage(subType string, senderId string, content string) *Message {
+	return &Message{
+		ID:   uuid.New().String(),
+		Type: ChatPublic,
+		Payload: map[string]interface{}{
+			"subType":  subType,
+			"senderId": senderId,
+			"content":  content,
 		},
 	}
 }

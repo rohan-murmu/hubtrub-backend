@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/scythrine05/hubtrub-server/internal/handler"
+	"github.com/scythrine05/hubtrub-server/internal/middleware"
 	"github.com/scythrine05/hubtrub-server/internal/repository"
-	"github.com/scythrine05/hubtrub-server/internal/room"
 	"github.com/scythrine05/hubtrub-server/internal/service"
 
 	"github.com/gorilla/mux"
@@ -15,9 +15,6 @@ import (
 func main() {
 	// Create a new Gorilla mux router
 	router := mux.NewRouter()
-
-	// In-memory storage for rooms (roomID -> Room)
-	rooms := make(map[string]*room.Room)
 
 	// Initialize repositories
 	roomRepo := repository.NewFileRoomRepository("./data/room.jsonl")
@@ -31,6 +28,9 @@ func main() {
 	roomHandler := handler.NewRoomHandler(roomService)
 	clientHandler := handler.NewClientHandler(clientService)
 
+	// Initialize room manager
+	roomManager := handler.NewRoomManager(100)
+
 	// Register Client routes
 	handler.RegisterClientRoutes(router, clientHandler)
 
@@ -39,7 +39,7 @@ func main() {
 
 	// WebSocket handler using Gorilla mux
 	router.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeWs(rooms, roomService, w, r)
+		handler.ServeWs(roomManager, roomService, clientService, w, r)
 	})
 
 	// Health check endpoint
@@ -50,7 +50,8 @@ func main() {
 
 	log.Println("🚀 Hubtrub Server started on :9000")
 
-	err := http.ListenAndServe(":9000", router)
+	// Wrap the router with CORS middleware at the top level
+	err := http.ListenAndServe(":9000", middleware.CORSMiddleware(router))
 	if err != nil {
 		log.Fatal("ListenAndServe:", err)
 	}

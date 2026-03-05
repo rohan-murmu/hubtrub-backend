@@ -37,35 +37,14 @@ func NewClientHandler(service *service.ClientService) *ClientHandler {
 func (h *ClientHandler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	var clientReq ClientRequest
 	if err := json.NewDecoder(r.Body).Decode(&clientReq); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		RespondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	// Check if client with this username already exists
 	existingClient, err := h.service.GetClientByUserName(clientReq.ClientUserName)
 	if err == nil && existingClient != nil {
-		// Username exists - update the existing client with a new ClientID
-		newID := uuid.New().String()
-		existingClient.ClientID = newID
-		existingClient.ClientAvatar = clientReq.ClientAvatar
-		if err := h.service.UpdateClient(existingClient.ClientID, existingClient); err != nil {
-			http.Error(w, "Failed to update client", http.StatusInternalServerError)
-			return
-		}
-
-		// Generate JWT token for the updated client
-		token, err := util.GenerateToken(existingClient.ClientID, existingClient.ClientUserName)
-		if err != nil {
-			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(ClientResponse{
-			Client: existingClient,
-			Token:  token,
-		})
+		RespondError(w, http.StatusConflict, "Username already exists")
 		return
 	}
 
@@ -77,20 +56,18 @@ func (h *ClientHandler) CreateClient(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.service.CreateClient(&client); err != nil {
-		http.Error(w, "Failed to create client", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to create client")
 		return
 	}
 
 	// Generate JWT token for the client
-	token, err := util.GenerateToken(client.ClientID, client.ClientUserName)
+	token, err := util.GenerateToken(client.ClientID, client.ClientUserName, client.ClientAvatar)
 	if err != nil {
-		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to generate token")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(ClientResponse{
+	RespondSuccess(w, http.StatusCreated, ClientResponse{
 		Client: &client,
 		Token:  token,
 	})
@@ -100,12 +77,11 @@ func (h *ClientHandler) CreateClient(w http.ResponseWriter, r *http.Request) {
 func (h *ClientHandler) GetAllClients(w http.ResponseWriter, r *http.Request) {
 	clients, err := h.service.GetAllClients()
 	if err != nil {
-		http.Error(w, "Failed to fetch clients", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to fetch clients")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(clients)
+	RespondSuccess(w, http.StatusOK, clients)
 }
 
 // GetClientByID handles GET /client/:client_id
@@ -114,12 +90,11 @@ func (h *ClientHandler) GetClientByID(w http.ResponseWriter, r *http.Request) {
 
 	client, err := h.service.GetClientByID(clientID)
 	if err != nil {
-		http.Error(w, "Client not found", http.StatusNotFound)
+		RespondError(w, http.StatusNotFound, "Client not found")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(client)
+	RespondSuccess(w, http.StatusOK, client)
 }
 
 // UpdateClient handles PUT /client/:client_id
@@ -128,7 +103,7 @@ func (h *ClientHandler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 
 	var client model.Client
 	if err := json.NewDecoder(r.Body).Decode(&client); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		RespondError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -136,12 +111,11 @@ func (h *ClientHandler) UpdateClient(w http.ResponseWriter, r *http.Request) {
 	client.ClientID = clientID
 
 	if err := h.service.UpdateClient(clientID, &client); err != nil {
-		http.Error(w, "Failed to update client", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to update client")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(client)
+	RespondSuccess(w, http.StatusOK, client)
 }
 
 // DeleteClient handles DELETE /client/:client_id
@@ -149,11 +123,10 @@ func (h *ClientHandler) DeleteClient(w http.ResponseWriter, r *http.Request) {
 	clientID := mux.Vars(r)["client_id"]
 
 	if err := h.service.DeleteClient(clientID); err != nil {
-		http.Error(w, "Failed to delete client", http.StatusInternalServerError)
+		RespondError(w, http.StatusInternalServerError, "Failed to delete client")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
 }
 

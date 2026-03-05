@@ -11,6 +11,7 @@ import (
 type TokenClaims struct {
 	ClientID       string `json:"clientId"`
 	ClientUserName string `json:"clientUserName"`
+	ClientAvatar   string `json:"clientAvatar"`
 	jwt.RegisteredClaims
 }
 
@@ -22,10 +23,11 @@ const (
 )
 
 // GenerateToken creates a new JWT token for a client
-func GenerateToken(clientID, clientUserName string) (string, error) {
+func GenerateToken(clientID, clientUserName string, clientAvatar string) (string, error) {
 	claims := TokenClaims{
 		ClientID:       clientID,
 		ClientUserName: clientUserName,
+		ClientAvatar:   clientAvatar,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(TokenExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
