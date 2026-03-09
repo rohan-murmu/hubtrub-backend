@@ -2,7 +2,6 @@ package room
 
 import (
 	"log"
-	"sync"
 
 	"github.com/scythrine05/hubtrub-server/internal/client"
 )
@@ -10,107 +9,130 @@ import (
 // User represents a logical user that can have multiple connections
 // (e.g., web client + game client simultaneously)
 type User struct {
-	ID          string                    // Unique user ID (clientId)
-	Connections map[string]*client.Client // connectionType -> Client
-	mu          sync.RWMutex              // Protects Connections map
+	ID            string         // Unique user ID (clientId)
+	GameConn      *client.Client // "game" connection
+	InterfaceConn *client.Client // "interface" connection
 }
 
 // NewUser creates a new user
 func NewUser(userID string) *User {
 	return &User{
-		ID:          userID,
-		Connections: make(map[string]*client.Client),
+		ID: userID,
 	}
 }
 
-// AddConnection adds a new connection to this user
-// If a connection of the same type exists, it closes the old one first
+// AddConnection adds a new connection to this user (only "game" or "interface" types allowed)
 func (u *User) AddConnection(connType string, c *client.Client) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	if oldConn, exists := u.Connections[connType]; exists {
-		log.Printf("User %s: Closing old %s connection, new connection incoming", u.ID, connType)
-		oldConn.Close()
-		delete(u.Connections, connType)
+	switch connType {
+	case "game":
+		if u.GameConn != nil {
+			log.Printf("User %s: Closing old game connection, new connection incoming", u.ID)
+			u.GameConn.Close()
+		}
+		u.GameConn = c
+		log.Printf("User %s: Added game connection", u.ID)
+	case "interface":
+		if u.InterfaceConn != nil {
+			log.Printf("User %s: Closing old interface connection, new connection incoming", u.ID)
+			u.InterfaceConn.Close()
+		}
+		u.InterfaceConn = c
+		log.Printf("User %s: Added interface connection", u.ID)
+	default:
+		log.Printf("User %s: Unknown connection type '%s', ignoring", u.ID, connType)
 	}
-
-	// Add the new connection
-	u.Connections[connType] = c
-	log.Printf("User %s: Added %s connection (total: %d)", u.ID, connType, len(u.Connections))
 }
 
 // RemoveConnection removes a connection from this user
 func (u *User) RemoveConnection(connType string) bool {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-
-	if _, exists := u.Connections[connType]; exists {
-		delete(u.Connections, connType)
-		log.Printf("User %s: Removed %s connection (remaining: %d)", u.ID, connType, len(u.Connections))
-		return true
+	switch connType {
+	case "game":
+		if u.GameConn != nil {
+			u.GameConn.Close()
+			u.GameConn = nil
+			log.Printf("User %s: Removed game connection", u.ID)
+			return true
+		}
+	case "interface":
+		if u.InterfaceConn != nil {
+			u.InterfaceConn.Close()
+			u.InterfaceConn = nil
+			log.Printf("User %s: Removed interface connection", u.ID)
+			return true
+		}
 	}
 	return false
 }
 
 // HasConnections checks if user has any active connections
 func (u *User) HasConnections() bool {
-	u.mu.RLock()
-	defer u.mu.RUnlock()
-	return len(u.Connections) > 0
+	return u.GameConn != nil || u.InterfaceConn != nil
 }
 
 // BroadcastToAllConnections sends data to all active connections of this user
 // Non-blocking: drops slow connections automatically
 func (u *User) BroadcastToAllConnections(data []byte) {
-	u.mu.RLock()
-	connections := make([]*client.Client, 0, len(u.Connections))
-	for _, conn := range u.Connections {
-		connections = append(connections, conn)
-	}
-	u.mu.RUnlock()
-
-	// Send to all connections without holding lock
-	for _, conn := range connections {
+	if u.GameConn != nil {
 		select {
-		case conn.Send <- data:
-
+		case u.GameConn.Send <- data:
 		default:
-			log.Printf("User %s: Connection buffer full, dropping message", u.ID)
+			log.Printf("User %s: GameConn buffer full, dropping message", u.ID)
+		}
+	}
+	if u.InterfaceConn != nil {
+		select {
+		case u.InterfaceConn.Send <- data:
+		default:
+			log.Printf("User %s: InterfaceConn buffer full, dropping message", u.ID)
 		}
 	}
 }
 
-// BroadcastToConnectionType sends data to all connections of a specific type
+// BroadcastToConnectionType sends data to a specific connection type ("game" or "interface")
 // Non-blocking: drops slow connections automatically
-// Silently returns if the connection type doesn't exist (this is expected when not all users have all connection types)
 func (u *User) BroadcastToConnectionType(connType string, data []byte) {
-	u.mu.RLock()
-	conn, exists := u.Connections[connType]
-	u.mu.RUnlock()
-
-	if !exists {
-		// Silently return - it's normal for users to not have all connection types
-		return
-	}
-
-	select {
-	case conn.Send <- data:
+	switch connType {
+	case "game":
+		if u.GameConn != nil {
+			select {
+			case u.GameConn.Send <- data:
+			default:
+				log.Printf("User %s: GameConn buffer full, dropping message", u.ID)
+			}
+		}
+	case "interface":
+		if u.InterfaceConn != nil {
+			select {
+			case u.InterfaceConn.Send <- data:
+			default:
+				log.Printf("User %s: InterfaceConn buffer full, dropping message", u.ID)
+			}
+		}
 	default:
-		log.Printf("User %s: Connection buffer full for type %s, dropping message", u.ID, connType)
+		// Ignore unknown types
 	}
 }
 
 // GetConnection returns a specific connection type (for internal use)
 func (u *User) GetConnection(connType string) *client.Client {
-	u.mu.RLock()
-	defer u.mu.RUnlock()
-	return u.Connections[connType]
+	switch connType {
+	case "game":
+		return u.GameConn
+	case "interface":
+		return u.InterfaceConn
+	default:
+		return nil
+	}
 }
 
 // GetConnectionCount returns the number of active connections
 func (u *User) GetConnectionCount() int {
-	u.mu.RLock()
-	defer u.mu.RUnlock()
-	return len(u.Connections)
+	count := 0
+	if u.GameConn != nil {
+		count++
+	}
+	if u.InterfaceConn != nil {
+		count++
+	}
+	return count
 }

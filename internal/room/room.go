@@ -93,34 +93,31 @@ func (r *Room) Run() {
 
 		// Handle client registration
 		case msg := <-r.RegisterC:
-			// Extract client and connection type from message
+			// Only accept RegistrationMessage with "game" or "interface" types
 			var wsClient *client.Client
 			var connType string
-
-			// Handle both RegistrationMessage (new) and bare Client (for backward compatibility)
 			if regMsg, ok := msg.(*RegistrationMessage); ok {
 				wsClient = regMsg.Client
 				connType = regMsg.ConnType
-			} else if wsClient, ok = msg.(*client.Client); ok {
-				// Backward compatibility: treat bare client as default connection type
-				connType = "default"
 			} else {
-				log.Printf("Room %s: invalid message type in RegisterC", r.ID)
+				log.Printf("Room %s: invalid or legacy registration message, ignoring", r.ID)
 				continue
 			}
-
+			if connType != "game" && connType != "interface" {
+				log.Printf("Room %s: invalid connection type '%s' for user %s, closing connection", r.ID, connType, wsClient.ID)
+				wsClient.Close()
+				continue
+			}
 			if len(r.Users) >= r.maxUsers {
 				log.Printf("Room %s: max users reached, rejecting client %s", r.ID, wsClient.ID)
-				close(wsClient.Send)
+				wsClient.Close()
 				continue
 			}
-
 			// Get or create user
 			user, exists := r.Users[wsClient.ID]
 			if !exists {
 				user = NewUser(wsClient.ID)
 				r.Users[wsClient.ID] = user
-
 				// Create player state for new user
 				r.playerStates[wsClient.ID] = PlayerState{
 					ClientID: wsClient.ID,
@@ -133,12 +130,8 @@ func (r *Room) Run() {
 			} else {
 				log.Printf("Room %s: user %s already exists, adding %s connection", r.ID, wsClient.ID, connType)
 			}
-
-			// Add the connection to the user atomically
-			// If connType already exists, it will be replaced (old one closed gracefully)
 			user.AddConnection(connType, wsClient)
 			log.Printf("Room %s: connection added successfully for user %s, type %s", r.ID, wsClient.ID, connType)
-			// Broadcast join message to the connection type that just connected
 			r.broadcastJoinMessage(connType, wsClient.ID)
 		// Handle client unregistration
 		case c := <-r.UnregisterC:
@@ -147,30 +140,25 @@ func (r *Room) Run() {
 				continue
 			}
 
-			// Find which connection type this client had
+			// Find which connection type this client had (only "game" or "interface")
 			var connTypeRemoved string
-			for connType, conn := range user.Connections {
-				if conn == c {
-					connTypeRemoved = connType
-					break
-				}
+			if user.GameConn == c {
+				connTypeRemoved = "game"
+			} else if user.InterfaceConn == c {
+				connTypeRemoved = "interface"
 			}
-
 			// Remove this specific connection from the user
 			if connTypeRemoved != "" {
 				user.RemoveConnection(connTypeRemoved)
 				log.Printf("Room %s: user %s lost %s connection", r.ID, c.ID, connTypeRemoved)
 			}
-
 			// Close the connection safely (handles channel close guard)
 			c.Close()
-
 			// If user has no more connections, remove user from room
 			if !user.HasConnections() {
 				delete(r.Users, c.ID)
 				delete(r.playerStates, c.ID)
 				log.Printf("Room %s: user %s unregistered completely. Total users: %d", r.ID, c.ID, len(r.Users))
-
 				// Only broadcast leave if we know the connection type that left
 				if connTypeRemoved != "" {
 					r.broadcastLeaveMessage(connTypeRemoved, c.ID)
@@ -213,9 +201,6 @@ func (r *Room) handleMessage(msg *Message) {
 
 // handleMovementMessage updates player state but does NOT broadcast immediately.
 // Movement is aggregated and broadcast on ticker.
-//
-// OPTIMIZATION: This prevents flooding the network with movement packets.
-// Instead, movements are batched and sent once per tick (50ms).
 func (r *Room) handleMovementMessage(msg *Message) {
 	// Extract client ID from payload
 	clientID, ok := msg.Payload["pid"].(string)
@@ -279,54 +264,90 @@ func (r *Room) broadcastWorldState() {
 }
 
 // broadcastJoinMessage notifies all clients that a new client joined.
+// For "game" connections: sends detailed player state with position
+// For "interface" connections: sends simple "Player Joined" message
 func (r *Room) broadcastJoinMessage(connType, clientID string) {
+	// Only allow "game" or "interface" types
+	if connType != "game" && connType != "interface" {
+		return
+	}
 	state, stateExists := r.playerStates[clientID]
 	if !stateExists {
 		log.Printf("Room %s: player state not found for %s, skipping join message", r.ID, clientID)
 		return
 	}
 
-	// Message for self (joining client) - is_self = true
-	selfMsg := message.NewPlayerJoinMessage(clientID, int(state.X), int(state.Y), true)
-	selfData, err := json.Marshal(selfMsg)
-	if err != nil {
-		log.Printf("Room %s: failed to marshal self join message: %v", r.ID, err)
-		return
-	}
-	// Send join message to the connection type that just connected
-	r.sendToUserConnection(clientID, connType, selfData)
-
-	// Send all existing players to the new user
-	for existingClientID, existingState := range r.playerStates {
-		if existingClientID == clientID {
-			continue // Skip the new user themselves
-		}
-		existingPlayerMsg := message.NewPlayerJoinMessage(existingClientID, int(existingState.X), int(existingState.Y), false)
-		existingPlayerData, err := json.Marshal(existingPlayerMsg)
+	if connType == "game" {
+		// For game connections: send detailed player join message
+		// Message for self (joining client) - is_self = true
+		selfMsg := message.NewPlayerJoinMessage(clientID, int(state.X), int(state.Y), true)
+		selfData, err := json.Marshal(selfMsg)
 		if err != nil {
-			log.Printf("Room %s: failed to marshal existing player message: %v", r.ID, err)
-			continue
+			log.Printf("Room %s: failed to marshal self join message: %v", r.ID, err)
+			return
 		}
-		// Send to the connection type that just connected
-		r.sendToUserConnection(clientID, connType, existingPlayerData)
-	}
+		r.sendToUserConnection(clientID, connType, selfData)
 
-	// Message for others (all other clients) - the new player joining (is_self = false)
-	othersMsg := message.NewPlayerJoinMessage(clientID, int(state.X), int(state.Y), false)
-	othersData, err := json.Marshal(othersMsg)
-	if err != nil {
-		log.Printf("Room %s: failed to marshal others join message: %v", r.ID, err)
-		return
-	}
-	// Broadcast to all other users on the SAME connection type that this user connected with
-	// Only send to users who have this connection type
-	for otherUserID, otherUser := range r.Users {
-		if otherUserID == clientID {
-			continue // Skip the new user themselves
+		// Send all existing players to the new user
+		for existingClientID, existingState := range r.playerStates {
+			if existingClientID == clientID {
+				continue
+			}
+			existingPlayerMsg := message.NewPlayerJoinMessage(existingClientID, int(existingState.X), int(existingState.Y), false)
+			existingPlayerData, err := json.Marshal(existingPlayerMsg)
+			if err != nil {
+				log.Printf("Room %s: failed to marshal existing player message: %v", r.ID, err)
+				continue
+			}
+			r.sendToUserConnection(clientID, connType, existingPlayerData)
 		}
-		// Only send if they have a connection of this type
-		if otherUser.GetConnection(connType) != nil {
-			r.sendToUserConnection(otherUserID, connType, othersData)
+
+		// Message for others (all other clients) - the new player joining (is_self = false)
+		othersMsg := message.NewPlayerJoinMessage(clientID, int(state.X), int(state.Y), false)
+		othersData, err := json.Marshal(othersMsg)
+		if err != nil {
+			log.Printf("Room %s: failed to marshal others join message: %v", r.ID, err)
+			return
+		}
+		for otherUserID, otherUser := range r.Users {
+			if otherUserID == clientID {
+				continue
+			}
+			if otherUser.GetConnection(connType) != nil {
+				r.sendToUserConnection(otherUserID, connType, othersData)
+			}
+		}
+	} else if connType == "interface" {
+		// For interface connections: send simple "Player Joined" message
+		// Message for self (joining client)
+		selfMsg := map[string]interface{}{
+			"type":    "player:join",
+			"payload": "Player Joined",
+		}
+		selfData, err := json.Marshal(selfMsg)
+		if err != nil {
+			log.Printf("Room %s: failed to marshal interface join message: %v", r.ID, err)
+			return
+		}
+		r.sendToUserConnection(clientID, connType, selfData)
+
+		// Notify all other users on interface connections about the new player joining
+		othersMsg := map[string]interface{}{
+			"type":    "player:join",
+			"payload": "Player Joined",
+		}
+		othersData, err := json.Marshal(othersMsg)
+		if err != nil {
+			log.Printf("Room %s: failed to marshal interface join notification: %v", r.ID, err)
+			return
+		}
+		for otherUserID, otherUser := range r.Users {
+			if otherUserID == clientID {
+				continue
+			}
+			if otherUser.GetConnection(connType) != nil {
+				r.sendToUserConnection(otherUserID, connType, othersData)
+			}
 		}
 	}
 }
@@ -346,7 +367,10 @@ func (r *Room) broadcastLeaveMessage(connType, clientID string) {
 		return
 	}
 
-	// Broadcast leave message ONLY to game connections
+	// Only allow "game" or "interface" types
+	if connType != "game" && connType != "interface" {
+		return
+	}
 	r.sendToAllUsersConnection(connType, data)
 }
 
@@ -374,8 +398,8 @@ func (r *Room) handlePublicChat(msg *Message) {
 		return
 	}
 
-	// Broadcast public chat ONLY to web connections
-	r.sendToAllUsersConnection("web", data)
+	// Broadcast public chat ONLY to interface connections
+	r.sendToAllUsersConnection("interface", data)
 }
 
 // handlePrivateChat handles private chat messages with subtypes:
@@ -728,7 +752,6 @@ func (r *Room) handleGroupChat(msg *Message) {
 }
 
 // Helper function to create a unique ID for a private chat between two clients
-// The ID is always in the same order regardless of who initiated
 func (r *Room) createPrivateChatID(clientA, clientB string) string {
 	if clientA < clientB {
 		return clientA + "-" + clientB
@@ -799,7 +822,6 @@ func (r *Room) sendToUser(userID string, data []byte) {
 }
 
 // sendToAllUsers sends data to all users (each user gets it on all their connections)
-// CRITICAL: This NEVER blocks the room's main loop.
 // This is essential for scaling to 1000+ concurrent connections.
 func (r *Room) sendToAllUsers(data []byte) {
 	for _, user := range r.Users {
@@ -808,7 +830,6 @@ func (r *Room) sendToAllUsers(data []byte) {
 }
 
 // sendToAllUsersButOne sends data to all users except the specified user
-// CRITICAL: This NEVER blocks the room's main loop.
 // This is essential for scaling to 1000+ concurrent connections.
 func (r *Room) sendToAllUsersButOne(senderID string, data []byte) {
 	for userID, user := range r.Users {
@@ -821,22 +842,32 @@ func (r *Room) sendToAllUsersButOne(senderID string, data []byte) {
 
 // sendToUserConnection sends data to a specific user's specific connection type
 func (r *Room) sendToUserConnection(userID string, connType string, data []byte) {
+	// Only allow "game" or "interface" types
+	if connType != "game" && connType != "interface" {
+		return
+	}
 	if user, ok := r.Users[userID]; ok {
 		user.BroadcastToConnectionType(connType, data)
 	}
 }
 
 // sendToAllUsersConnection sends data to all users on a specific connection type
-// CRITICAL: This NEVER blocks the room's main loop.
 func (r *Room) sendToAllUsersConnection(connType string, data []byte) {
+	// Only allow "game" or "interface" types
+	if connType != "game" && connType != "interface" {
+		return
+	}
 	for _, user := range r.Users {
 		user.BroadcastToConnectionType(connType, data)
 	}
 }
 
 // sendToAllUsersConnectionButOne sends data to all users except the specified user on a specific connection type
-// CRITICAL: This NEVER blocks the room's main loop.
 func (r *Room) sendToAllUsersConnectionButOne(senderID string, connType string, data []byte) {
+	// Only allow "game" or "interface" types
+	if connType != "game" && connType != "interface" {
+		return
+	}
 	for userID, user := range r.Users {
 		if userID == senderID {
 			continue
