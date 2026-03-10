@@ -23,7 +23,7 @@ type PlayerState struct {
 // RegistrationMessage wraps a client with its connection type for atomic registration
 type RegistrationMessage struct {
 	Client   *client.Client
-	ConnType string // "web", "game", "default", etc.
+	ConnType string // "interface", "game", "default", etc.
 }
 
 // Room represents a single room with all its users and state.
@@ -415,10 +415,14 @@ func (r *Room) handlePrivateChat(msg *Message) {
 		return
 	}
 
-	receiverID, ok := msg.Payload["recieverId"].(string) // Note: typo in original code
+	receiverID, ok := msg.Payload["receiverId"].(string)
 	if !ok {
-		log.Printf("Room %s: invalid receiverId in private chat", r.ID)
-		return
+		if rid, ok2 := msg.Payload["recieverId"].(string); ok2 {
+			receiverID = rid
+		} else {
+			log.Printf("Room %s: invalid receiverId in private chat, payload keys: %+v", r.ID, msg.Payload)
+			return
+		}
 	}
 
 	subType, _ := msg.Payload["subType"].(string)
@@ -439,7 +443,7 @@ func (r *Room) handlePrivateChat(msg *Message) {
 			return
 		}
 		// Send private chat ONLY to web connections
-		r.sendToUserConnection(receiverID, "web", data)
+		r.sendToUserConnection(receiverID, "interface", data)
 
 	case message.ChatSubtypeRespond:
 		// Receiver responds to the private chat request
@@ -456,8 +460,8 @@ func (r *Room) handlePrivateChat(msg *Message) {
 			log.Printf("Room %s: failed to marshal private chat response: %v", r.ID, err)
 			return
 		}
-		// Send to web connections only
-		r.sendToUserConnection(receiverID, "web", data)
+
+		r.sendToUserConnection(receiverID, "interface", data)
 
 		// If accepted, create the private chat entry
 		if status == "accepted" {
@@ -490,7 +494,7 @@ func (r *Room) handlePrivateChat(msg *Message) {
 			return
 		}
 		// Send private message ONLY to web connections
-		r.sendToUserConnection(receiverID, "web", data)
+		r.sendToUserConnection(receiverID, "interface", data)
 
 	case message.ChatSubtypeJoin:
 		// Convert private chat to group chat by adding a new member
@@ -538,7 +542,7 @@ func (r *Room) handlePrivateChat(msg *Message) {
 			return
 		}
 		// Send group join ONLY to web connections
-		r.sendToGroupMembersConnection(groupID, "web", data)
+		r.sendToGroupMembersConnection(groupID, "interface", data)
 
 	case message.ChatSubtypeLeave:
 		// Member leaves the private/group chat
@@ -569,7 +573,7 @@ func (r *Room) handlePrivateChat(msg *Message) {
 				data, err := json.Marshal(leaveMsg)
 				if err == nil {
 					// Send leave notification ONLY to web connections
-					r.sendToGroupMembersConnection(groupID, "web", data)
+					r.sendToGroupMembersConnection(groupID, "interface", data)
 				}
 			}
 		}
@@ -623,7 +627,7 @@ func (r *Room) handleGroupChat(msg *Message) {
 			return
 		}
 		// Send group chat request ONLY to web connections
-		r.sendToUserConnection(receiverID, "web", data)
+		r.sendToUserConnection(receiverID, "interface", data)
 
 	case message.ChatSubtypeRespond:
 		// Receiver responds to the group chat request
@@ -650,7 +654,7 @@ func (r *Room) handleGroupChat(msg *Message) {
 		}
 
 		// Send group chat response ONLY to web connections
-		r.sendToUserConnection(requesterID, "web", data)
+		r.sendToUserConnection(requesterID, "interface", data)
 
 		// If accepted, create the group chat
 		if status == "accepted" {
@@ -694,7 +698,7 @@ func (r *Room) handleGroupChat(msg *Message) {
 			return
 		}
 		// Send group join ONLY to web connections
-		r.sendToGroupMembersConnection(groupID, "web", data)
+		r.sendToGroupMembersConnection(groupID, "interface", data)
 
 	case message.ChatSubtypeMessage:
 		// Send a message to the group
@@ -717,7 +721,7 @@ func (r *Room) handleGroupChat(msg *Message) {
 			return
 		}
 		// Send group message ONLY to web connections
-		r.sendToGroupMembersConnection(groupID, "web", data)
+		r.sendToGroupMembersConnection(groupID, "interface", data)
 
 	case message.ChatSubtypeLeave:
 		// Member leaves the group
@@ -742,7 +746,7 @@ func (r *Room) handleGroupChat(msg *Message) {
 			data, err := json.Marshal(leaveMsg)
 			if err == nil {
 				// Send leave notification ONLY to web connections
-				r.sendToGroupMembersConnection(groupID, "web", data)
+				r.sendToGroupMembersConnection(groupID, "interface", data)
 			}
 		}
 
@@ -811,7 +815,7 @@ func (r *Room) broadcastInterfaceMessage(msg *Message) {
 	}
 
 	// Send interface messages ONLY to web connections
-	r.sendToAllUsersConnection("web", data)
+	r.sendToAllUsersConnection("interface", data)
 }
 
 // sendToUser sends data to a specific user (to all their connections)
