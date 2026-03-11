@@ -9,6 +9,7 @@ import (
 	"github.com/scythrine05/hubtrub-server/internal/client"
 	"github.com/scythrine05/hubtrub-server/internal/group"
 	"github.com/scythrine05/hubtrub-server/internal/message"
+	"github.com/scythrine05/hubtrub-server/internal/user"
 )
 
 // PlayerState holds the current position and state of a player.
@@ -20,33 +21,31 @@ type PlayerState struct {
 	IsMoving bool    `json:"is_moving"`
 }
 
-// RegistrationMessage wraps a client with its connection type for atomic registration
+// RegistrationMessage wraps a client with its connection type
 type RegistrationMessage struct {
 	Client   *client.Client
-	ConnType string // "interface", "game", "default", etc.
+	ConnType string
 }
 
-// Room represents a single room with all its users and state.
-// CRITICAL: Only Room.Run() modifies state. No mutexes needed.
-// This is the room-authoritative game state.
+// Room represents a game room with multiple users, player states, and chat groups.
 type Room struct {
 	ID string
 
-	// User management (one logical user can have multiple connections)
-	Users       map[string]*User    // userID -> User
-	RegisterC   chan interface{}    // Client registration channel - accepts *RegistrationMessage or *client.Client (buffered, 10)
-	UnregisterC chan *client.Client // Client unregistration channel (buffered, 10)
-	MessageC    chan Message        // Incoming messages from clients (buffered, 256)
+	Users       map[string]*user.User // User
+	RegisterC   chan interface{}      // Client registration channel - accepts *RegistrationMessage
+	UnregisterC chan *client.Client   // Client unregistration channel
+	MessageC    chan Message          // Incoming messages from clients
 
-	// Game state
-	playerStates map[string]PlayerState // userID -> PlayerState
+	playerStates map[string]PlayerState // Player states keyed by client ID
 
-	// Groups
-	Groups map[string]*group.Group
+	Groups map[string]*group.Group // Chat groups keyed by group ID
 
-	// Private chats (temporary 1:1 chats before they become groups)
-	// Map: "userA-userB" -> map of userID pairs
-	PrivateChats map[string]map[string]bool // chatID -> {userA: true, userB: true}
+	PrivateChats map[string]map[string]bool // Private chat memberships keyed by sorted "clientA:clientB" string
+
+	// Idle timer for room deletion
+	idleTimer    *time.Timer   // Timer that fires when room is empty for too long
+	idleDuration time.Duration // How long to wait before deleting empty room
+	onEmpty      func()        // Callback when room should be deleted (called by RoomManager)
 
 	// Configuration
 	maxUsers int
@@ -61,17 +60,19 @@ type Message struct {
 }
 
 // NewRoom creates a new room.
-// Each room runs exactly one goroutine: room.Run()
 func NewRoom(roomID string) *Room {
 	return &Room{
 		ID:           roomID,
-		Users:        make(map[string]*User),
+		Users:        make(map[string]*user.User),
 		RegisterC:    make(chan interface{}, 10),
 		UnregisterC:  make(chan *client.Client, 10),
 		MessageC:     make(chan Message, 256),
 		playerStates: make(map[string]PlayerState),
 		Groups:       make(map[string]*group.Group),
 		PrivateChats: make(map[string]map[string]bool),
+		idleTimer:    nil,
+		idleDuration: 60 * time.Second, // Default: delete empty room after 60 seconds
+		onEmpty:      nil,              // Will be set by RoomManager
 		maxUsers:     100,
 		tickRate:     50 * time.Millisecond, // Movement aggregation tick
 	}
@@ -90,6 +91,16 @@ func (r *Room) Run() {
 		// Broadcast world state on tick
 		case <-ticker.C:
 			r.broadcastWorldState()
+
+		// Handle idle timer expiration (room delete)
+		case <-r.getIdleTimerChan():
+			if len(r.Users) == 0 {
+				log.Printf("Room %s: idle timeout reached, room will be deleted", r.ID)
+				if r.onEmpty != nil {
+					r.onEmpty()
+				}
+				return
+			}
 
 		// Handle client registration
 		case msg := <-r.RegisterC:
@@ -113,11 +124,20 @@ func (r *Room) Run() {
 				wsClient.Close()
 				continue
 			}
+
+			// If room was empty and idle timer was running, cancel it (user rejoined)
+			wasEmpty := len(r.Users) == 0
+			if wasEmpty && r.idleTimer != nil {
+				r.idleTimer.Stop()
+				r.idleTimer = nil
+				log.Printf("Room %s: user rejoined, idle timer cancelled", r.ID)
+			}
+
 			// Get or create user
-			user, exists := r.Users[wsClient.ID]
+			u, exists := r.Users[wsClient.ID]
 			if !exists {
-				user = NewUser(wsClient.ID)
-				r.Users[wsClient.ID] = user
+				u = user.NewUser(wsClient.ID)
+				r.Users[wsClient.ID] = u
 				// Create player state for new user
 				r.playerStates[wsClient.ID] = PlayerState{
 					ClientID: wsClient.ID,
@@ -130,32 +150,32 @@ func (r *Room) Run() {
 			} else {
 				log.Printf("Room %s: user %s already exists, adding %s connection", r.ID, wsClient.ID, connType)
 			}
-			user.AddConnection(connType, wsClient)
+			u.AddConnection(connType, wsClient)
 			log.Printf("Room %s: connection added successfully for user %s, type %s", r.ID, wsClient.ID, connType)
 			r.broadcastJoinMessage(connType, wsClient.ID)
 		// Handle client unregistration
 		case c := <-r.UnregisterC:
-			user, exists := r.Users[c.ID]
+			u, exists := r.Users[c.ID]
 			if !exists {
 				continue
 			}
 
 			// Find which connection type this client had (only "game" or "interface")
 			var connTypeRemoved string
-			if user.GameConn == c {
+			if u.GameConn == c {
 				connTypeRemoved = "game"
-			} else if user.InterfaceConn == c {
+			} else if u.InterfaceConn == c {
 				connTypeRemoved = "interface"
 			}
 			// Remove this specific connection from the user
 			if connTypeRemoved != "" {
-				user.RemoveConnection(connTypeRemoved)
+				u.RemoveConnection(connTypeRemoved)
 				log.Printf("Room %s: user %s lost %s connection", r.ID, c.ID, connTypeRemoved)
 			}
 			// Close the connection safely (handles channel close guard)
 			c.Close()
 			// If user has no more connections, remove user from room
-			if !user.HasConnections() {
+			if !u.HasConnections() {
 				delete(r.Users, c.ID)
 				delete(r.playerStates, c.ID)
 				log.Printf("Room %s: user %s unregistered completely. Total users: %d", r.ID, c.ID, len(r.Users))
@@ -165,8 +185,11 @@ func (r *Room) Run() {
 				}
 			}
 
-			// NOTE: We do NOT stop the room when empty - rooms persist so users can rejoin
-			// The room will be garbage collected eventually when no more references exist
+			// If room is now empty, start idle timer for deletion
+			if len(r.Users) == 0 && r.idleTimer == nil {
+				r.idleTimer = time.NewTimer(r.idleDuration)
+				log.Printf("Room %s: idle timer started, will delete room after %v if no one rejoins", r.ID, r.idleDuration)
+			}
 
 		// Handle incoming messages from clients
 		case msg := <-r.MessageC:
@@ -178,6 +201,9 @@ func (r *Room) Run() {
 // handleMessage processes a message from a client.
 func (r *Room) handleMessage(msg *Message) {
 	switch msg.Type {
+	case message.InternalIdleTimeout:
+		log.Printf("Room %s: WARNING - idle timeout message reached handleMessage, this shouldn't happen", r.ID)
+
 	case message.PlayerMovement:
 		r.handleMovementMessage(msg)
 		// Movement is broadcast on ticker, not immediately
@@ -200,7 +226,6 @@ func (r *Room) handleMessage(msg *Message) {
 }
 
 // handleMovementMessage updates player state but does NOT broadcast immediately.
-// Movement is aggregated and broadcast on ticker.
 func (r *Room) handleMovementMessage(msg *Message) {
 	// Extract client ID from payload
 	clientID, ok := msg.Payload["pid"].(string)
@@ -222,19 +247,11 @@ func (r *Room) handleMovementMessage(msg *Message) {
 		if isMoving, isMovingOk := msg.Payload["is_moving"].(bool); isMovingOk {
 			state.IsMoving = isMoving
 		}
-		// IMPORTANT: Update the map with the modified state
 		r.playerStates[clientID] = state
 	}
 }
 
-// broadcastWorldState aggregates all player states and broadcasts once per tick.
-//
-// SCALE OPTIMIZATION:
-// - Builds aggregated state once per tick
-// - Marshals JSON once
-// - Broadcasts same byte array to all clients
-// - Non-blocking sends drop slow clients automatically
-// - Prevents flooding at scale (1000+ concurrent connections)
+// BroadcastWorldState aggregates all player states and broadcasts once per tick.
 func (r *Room) broadcastWorldState() {
 	if len(r.Users) == 0 {
 		return
@@ -264,8 +281,6 @@ func (r *Room) broadcastWorldState() {
 }
 
 // broadcastJoinMessage notifies all clients that a new client joined.
-// For "game" connections: sends detailed player state with position
-// For "interface" connections: sends simple "Player Joined" message
 func (r *Room) broadcastJoinMessage(connType, clientID string) {
 	// Only allow "game" or "interface" types
 	if connType != "game" && connType != "interface" {
@@ -279,7 +294,6 @@ func (r *Room) broadcastJoinMessage(connType, clientID string) {
 
 	if connType == "game" {
 		// For game connections: send detailed player join message
-		// Message for self (joining client) - is_self = true
 		selfMsg := message.NewPlayerJoinMessage(clientID, int(state.X), int(state.Y), true)
 		selfData, err := json.Marshal(selfMsg)
 		if err != nil {
@@ -319,7 +333,6 @@ func (r *Room) broadcastJoinMessage(connType, clientID string) {
 		}
 	} else if connType == "interface" {
 		// For interface connections: send simple "Player Joined" message
-		// Message for self (joining client)
 		selfMsg := map[string]interface{}{
 			"type":    "player:join",
 			"payload": "Player Joined",
@@ -402,13 +415,10 @@ func (r *Room) handlePublicChat(msg *Message) {
 	r.sendToAllUsersConnection("interface", data)
 }
 
-// handlePrivateChat handles private chat messages with subtypes:
-// - "request": Sender initiates a private chat with receiver
-// - "respond": Receiver accepts/rejects a private chat request
-// - "join": Convert private chat to group chat by adding a third member
-// - "message": Send a message in the private/group chat
-// - "leave": Member leaves the private/group chat
+// handlePrivateChat handles private chat messages
 func (r *Room) handlePrivateChat(msg *Message) {
+
+	// Extract senderId and receiverId
 	senderID, ok := msg.Payload["senderId"].(string)
 	if !ok {
 		log.Printf("Room %s: invalid senderId in private chat", r.ID)
@@ -425,10 +435,12 @@ func (r *Room) handlePrivateChat(msg *Message) {
 		}
 	}
 
+	// Validate that both sender and receiver exist in the room
 	subType, _ := msg.Payload["subType"].(string)
 	content, _ := msg.Payload["content"].(string)
 
 	switch subType {
+	// Sender requests a private chat with receiver
 	case message.ChatSubtypeRequest:
 		// Sender requests a private chat with receiver
 		chatMsg := map[string]interface{}{
@@ -445,9 +457,31 @@ func (r *Room) handlePrivateChat(msg *Message) {
 		// Send private chat ONLY to web connections
 		r.sendToUserConnection(receiverID, "interface", data)
 
+	// Sender responds to private chat request (accept or reject)
 	case message.ChatSubtypeRespond:
 		// Receiver responds to the private chat request
 		status, _ := msg.Payload["status"].(string) // accepted or rejected
+
+		// If accepted, check if private chat already exists
+		if status == "accepted" {
+			privateChatID := r.createPrivateChatID(senderID, receiverID)
+			if _, exists := r.PrivateChats[privateChatID]; exists {
+				log.Printf("Room %s: private chat already exists between %s and %s, rejecting duplicate", r.ID, senderID, receiverID)
+				// Send rejection response
+				chatMsg := map[string]interface{}{
+					"type":       message.ChatPrivate,
+					"subType":    message.ChatSubtypeRespond,
+					"senderId":   senderID,
+					"receiverId": receiverID,
+					"status":     "rejected",
+					"reason":     "private chat already exists",
+				}
+				data, _ := json.Marshal(chatMsg)
+				r.sendToUserConnection(senderID, "interface", data)
+				return
+			}
+		}
+
 		chatMsg := map[string]interface{}{
 			"type":       message.ChatPrivate,
 			"subType":    message.ChatSubtypeRespond,
@@ -461,7 +495,7 @@ func (r *Room) handlePrivateChat(msg *Message) {
 			return
 		}
 
-		r.sendToUserConnection(receiverID, "interface", data)
+		r.sendToUserConnection(senderID, "interface", data)
 
 		// If accepted, create the private chat entry
 		if status == "accepted" {
@@ -583,12 +617,7 @@ func (r *Room) handlePrivateChat(msg *Message) {
 	}
 }
 
-// handleGroupChat handles group chat messages with subtypes:
-// - "request": Sender requests to create or join a group chat
-// - "respond": Receiver accepts/rejects the group chat request
-// - "join": Add a new member to an existing group chat
-// - "message": Send a message to the group
-// - "leave": Member leaves the group
+// handleGroupChat handles group chat messages
 func (r *Room) handleGroupChat(msg *Message) {
 	senderID, ok := msg.Payload["senderId"].(string)
 	if !ok {
@@ -753,6 +782,25 @@ func (r *Room) handleGroupChat(msg *Message) {
 	default:
 		log.Printf("Room %s: unknown group chat subtype %s from %s", r.ID, subType, senderID)
 	}
+}
+
+// getIdleTimerChan returns the idle timer channel or a nil-receiving channel if timer is not active
+func (r *Room) getIdleTimerChan() <-chan time.Time {
+	if r.idleTimer != nil {
+		return r.idleTimer.C
+	}
+	// Return a nil channel that never receives, so select will never take this case
+	return nil
+}
+
+// SetIdleTimeout sets the idle duration before room deletion
+func (r *Room) SetIdleTimeout(duration time.Duration) {
+	r.idleDuration = duration
+}
+
+// SetOnEmpty sets the callback when room should be deleted
+func (r *Room) SetOnEmpty(callback func()) {
+	r.onEmpty = callback
 }
 
 // Helper function to create a unique ID for a private chat between two clients

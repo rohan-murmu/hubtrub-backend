@@ -36,7 +36,6 @@ func Upgrader() *websocket.Upgrader {
 }
 
 // NewClient creates a new client.
-// The room is responsible for passing channels to the client.
 func NewClient(id string, conn *websocket.Conn) *Client {
 	return &Client{
 		ID:     id,
@@ -47,11 +46,9 @@ func NewClient(id string, conn *websocket.Conn) *Client {
 }
 
 // Close safely closes the client's send channel
-// This method prevents panic from double-closing the channel
 func (c *Client) Close() {
 	c.closedMu.Lock()
 	defer c.closedMu.Unlock()
-	
 	if !c.closed {
 		c.closed = true
 		close(c.Send)
@@ -60,8 +57,6 @@ func (c *Client) Close() {
 }
 
 // ReadPump reads messages from the client's WebSocket connection.
-// It parses JSON messages and sends them to the room's MessageC channel.
-// On disconnect, it notifies the room to unregister this client.
 func (c *Client) ReadPump(unregisterC chan *Client, messageC chan interface{}) {
 	defer func() {
 		log.Printf("Client %s: ReadPump exiting, sending to unregisterC", c.ID)
@@ -123,7 +118,6 @@ func (c *Client) ReadPump(unregisterC chan *Client, messageC chan interface{}) {
 }
 
 // WritePump writes messages from the Send channel to the WebSocket connection.
-// It also sends periodic ping messages to keep the connection alive.
 func (c *Client) WritePump() {
 	// Set up ticker for ping messages
 	ticker := time.NewTicker(util.PingPeriod)

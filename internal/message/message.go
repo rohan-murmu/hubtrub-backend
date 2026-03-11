@@ -12,16 +12,17 @@ type Message struct {
 
 // Message types
 const (
-	PlayerJoin      = "player:join"
-	PlayerLeave     = "player:leave"
-	PlayerMovement  = "player:movement"
-	WorldState      = "world:state"
-	InterfacePanel  = "interface:panel"
-	InterfaceViewer = "interface:viewer"
-	ChatPrivate     = "chat:private"
-	ChatGroup       = "chat:group"
-	ChatPublic      = "chat:public"
-	TypeError       = "error"
+	PlayerJoin          = "player:join"
+	PlayerLeave         = "player:leave"
+	PlayerMovement      = "player:movement"
+	WorldState          = "world:state"
+	InterfacePanel      = "interface:panel"
+	InterfaceViewer     = "interface:viewer"
+	ChatPrivate         = "chat:private"
+	ChatGroup           = "chat:group"
+	ChatPublic          = "chat:public"
+	TypeError           = "error"
+	InternalIdleTimeout = "_internal_idle_timeout"
 )
 
 // Chat subtypes

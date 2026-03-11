@@ -4,6 +4,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/scythrine05/hubtrub-server/internal/client"
 	"github.com/scythrine05/hubtrub-server/internal/message"
@@ -42,6 +43,13 @@ func (rm *RoomManager) GetOrCreate(roomID string) *room.Room {
 
 	r := room.NewRoom(roomID)
 	rm.rooms[roomID] = r
+
+	// Set the idle timeout and the onEmpty callback so the room can delete itself
+	r.SetIdleTimeout(60 * time.Second) // 60 seconds idle before deletion
+	r.SetOnEmpty(func() {
+		rm.DeleteRoom(roomID)
+	})
+
 	go r.Run()
 
 	log.Printf("RoomManager: created and started room %s", roomID)
@@ -66,12 +74,7 @@ func (rm *RoomManager) ActiveRoomCount() int {
 	return len(rm.rooms)
 }
 
-// ServeWs handles WebSocket upgrade and client connection.
-// Supports multiple connections per user (e.g., web client + game client).
-// Query parameters:
-//   - roomId: required, the room to join
-//   - clientId: required, the user's unique ID
-//   - type: optional (default: "default"), connection type (e.g., "client", "game")
+// Handle WebSocket connections for clients joining rooms
 func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientService *service.ClientService, w http.ResponseWriter, r *http.Request) {
 
 	// Get roomID and clientID from query parameters
@@ -87,10 +90,11 @@ func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientS
 		return
 	}
 
-	// Get connection type (optional, defaults to "default")
+	// Get connection type
 	connType := r.URL.Query().Get("type")
 	if connType == "" {
-		connType = "default"
+		http.Error(w, "type is required", http.StatusBadRequest)
+		return
 	}
 
 	// Verify room exists in database
@@ -124,12 +128,11 @@ func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientS
 		return
 	}
 
-	// Create new client connection (each connection is independent)
+	// Create new client connection for this WebSocket
 	wsClient := client.NewClient(clientID, conn)
 	log.Printf("Created new WebSocket client for user %s with connection type %s", clientID, connType)
 
-	// Send registration message with both client and connection type
-	// Room.Run() will handle creating User (if new) and adding connection atomically
+	// Register the client with the room
 	regMsg := &room.RegistrationMessage{
 		Client:   wsClient,
 		ConnType: connType,
@@ -156,7 +159,6 @@ func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientS
 	}()
 
 	// Start the client's read and write pumps in separate goroutines
-	// Each connection maintains its own goroutines
 	go wsClient.ReadPump(currentRoom.UnregisterC, msgBridgeC)
 	go wsClient.WritePump()
 }
