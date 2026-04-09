@@ -10,6 +10,7 @@ import (
 	"github.com/scythrine05/hubtrub-server/internal/message"
 	"github.com/scythrine05/hubtrub-server/internal/room"
 	"github.com/scythrine05/hubtrub-server/internal/service"
+	"github.com/scythrine05/hubtrub-server/internal/util"
 )
 
 // RoomManager manages the lifecycle of all rooms on this pod.
@@ -97,6 +98,12 @@ func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientS
 		return
 	}
 
+	// Validate connection type
+	if connType != util.ConnGame && connType != util.ConnUI {
+		http.Error(w, "invalid connection type", http.StatusBadRequest)
+		return
+	}
+
 	// Verify room exists in database
 	_, err := roomService.GetRoomByID(roomID)
 	if err != nil {
@@ -111,7 +118,7 @@ func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientS
 		return
 	}
 
-	log.Printf("User %s (%s connection) joining room %s", clientID, connType, roomID)
+	log.Printf("👤 User %s (%s connection) joining room %s", clientID, connType, roomID)
 
 	// Upgrade the HTTP connection to a WebSocket connection
 	conn, err := client.Upgrader().Upgrade(w, r, nil)
@@ -130,7 +137,7 @@ func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientS
 
 	// Create new client connection for this WebSocket
 	wsClient := client.NewClient(clientID, conn)
-	log.Printf("Created new WebSocket client for user %s with connection type %s", clientID, connType)
+	log.Printf("🌐 Created new WebSocket client for user %s with connection type %s", clientID, connType)
 
 	// Register the client with the room
 	regMsg := &room.RegistrationMessage{
@@ -138,7 +145,7 @@ func ServeWs(roomManager *RoomManager, roomService *service.RoomService, clientS
 		ConnType: connType,
 	}
 	currentRoom.RegisterC <- regMsg
-	log.Printf("Room %s: sent registration message for user %s with connection type %s", roomID, clientID, connType)
+	log.Printf("📦 Room %s: ✉️ Sent registration message for user %s with connection type %s", roomID, clientID, connType)
 
 	// Bridge to convert interface{} messages from ReadPump to room.Message
 	msgBridgeC := make(chan interface{}, 256)

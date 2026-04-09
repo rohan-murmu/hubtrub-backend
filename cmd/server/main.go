@@ -28,7 +28,7 @@ func main() {
 	roomHandler := handler.NewRoomHandler(roomService)
 	clientHandler := handler.NewClientHandler(clientService)
 
-	// Initialize room manager
+	// Initialize room manager (max 100 rooms for this pod)
 	roomManager := handler.NewRoomManager(100)
 
 	// Register Client routes

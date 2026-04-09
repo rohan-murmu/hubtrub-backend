@@ -59,12 +59,12 @@ func (c *Client) Close() {
 // ReadPump reads messages from the client's WebSocket connection.
 func (c *Client) ReadPump(unregisterC chan *Client, messageC chan interface{}) {
 	defer func() {
-		log.Printf("Client %s: ReadPump exiting, sending to unregisterC", c.ID)
+		log.Printf("👤 Client %s: ReadPump exiting, sending to unregisterC", c.ID)
 		unregisterC <- c
 		c.Conn.Close()
 	}()
 
-	log.Printf("Client %s: ReadPump started", c.ID)
+	log.Printf("👤 Client %s: ReadPump started", c.ID)
 
 	// Set up connection parameters
 	c.Conn.SetReadLimit(util.MaxMessageSize)
@@ -79,9 +79,9 @@ func (c *Client) ReadPump(unregisterC chan *Client, messageC chan interface{}) {
 		_, rawMessage, err := c.Conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error for client %s: %v", c.ID, err)
+				log.Printf("👤 WebSocket error for client %s: %v", c.ID, err)
 			}
-			log.Printf("Client %s: ReadMessage returned error: %v, exiting ReadPump", c.ID, err)
+			log.Printf("👤 Client %s: ReadMessage returned error: %v, exiting ReadPump", c.ID, err)
 			break
 		}
 		rawMessage = bytes.TrimSpace(rawMessage)
@@ -93,13 +93,13 @@ func (c *Client) ReadPump(unregisterC chan *Client, messageC chan interface{}) {
 		// Parse incoming message
 		var msg message.Message
 		if err := json.Unmarshal(rawMessage, &msg); err != nil {
-			log.Printf("Client %s: Failed to parse message: %v", c.ID, err)
+			log.Printf("👤 Client %s: Failed to parse message: %v", c.ID, err)
 			continue
 		}
 
 		// Validate message type is not empty
 		if msg.Type == "" {
-			log.Printf("Client %s: Received message with empty type", c.ID)
+			log.Printf("👤 Client %s: Received message with empty type", c.ID)
 			continue
 		}
 
@@ -112,7 +112,7 @@ func (c *Client) ReadPump(unregisterC chan *Client, messageC chan interface{}) {
 		select {
 		case messageC <- &msg:
 		default:
-			log.Printf("Client %s: Room message buffer full, message dropped", c.ID)
+			log.Printf("👤 Client %s: Room message buffer full, message dropped", c.ID)
 		}
 	}
 }
@@ -143,7 +143,7 @@ func (c *Client) WritePump() {
 
 			// Send the raw []byte message directly
 			if err := c.Conn.WriteMessage(websocket.TextMessage, data); err != nil {
-				log.Printf("Client %s: Failed to write message: %v", c.ID, err)
+				log.Printf("👤 Client %s: Failed to write message: %v", c.ID, err)
 				return
 			}
 
@@ -152,7 +152,7 @@ func (c *Client) WritePump() {
 			// Send a ping to the client
 			c.Conn.SetWriteDeadline(time.Now().Add(util.WriteWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				log.Printf("Client %s: Failed to send ping: %v", c.ID, err)
+				log.Printf("👤 Client %s: Failed to send ping: %v", c.ID, err)
 				return
 			}
 		}

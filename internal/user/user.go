@@ -4,14 +4,15 @@ import (
 	"log"
 
 	"github.com/scythrine05/hubtrub-server/internal/client"
+	"github.com/scythrine05/hubtrub-server/internal/util"
 )
 
 // User represents a logical user that can have multiple connections
 // (e.g., web client + game client simultaneously)
 type User struct {
-	ID            string         // Unique user ID (clientId)
-	GameConn      *client.Client // "game" connection
-	InterfaceConn *client.Client // "interface" connection
+	ID       string         // Unique user ID (clientId)
+	GameConn *client.Client // "game" connection
+	UIConn   *client.Client // "ui" connection
 }
 
 // NewUser creates a new user
@@ -21,23 +22,23 @@ func NewUser(userID string) *User {
 	}
 }
 
-// AddConnection adds a new connection to this user (only "game" or "interface" types allowed)
+// AddConnection adds a new connection to this user (only "game" or "ui" types allowed)
 func (u *User) AddConnection(connType string, c *client.Client) {
 	switch connType {
-	case "game":
+	case util.ConnGame:
 		if u.GameConn != nil {
 			log.Printf("User %s: Closing old game connection, new connection incoming", u.ID)
 			u.GameConn.Close()
 		}
 		u.GameConn = c
 		log.Printf("User %s: Added game connection", u.ID)
-	case "interface":
-		if u.InterfaceConn != nil {
-			log.Printf("User %s: Closing old interface connection, new connection incoming", u.ID)
-			u.InterfaceConn.Close()
+	case util.ConnUI:
+		if u.UIConn != nil {
+			log.Printf("User %s: Closing old ui connection, new connection incoming", u.ID)
+			u.UIConn.Close()
 		}
-		u.InterfaceConn = c
-		log.Printf("User %s: Added interface connection", u.ID)
+		u.UIConn = c
+		log.Printf("User %s: Added ui connection", u.ID)
 	default:
 		log.Printf("User %s: Unknown connection type '%s', ignoring", u.ID, connType)
 	}
@@ -46,18 +47,18 @@ func (u *User) AddConnection(connType string, c *client.Client) {
 // RemoveConnection removes a connection from this user
 func (u *User) RemoveConnection(connType string) bool {
 	switch connType {
-	case "game":
+	case util.ConnGame:
 		if u.GameConn != nil {
 			u.GameConn.Close()
 			u.GameConn = nil
 			log.Printf("User %s: Removed game connection", u.ID)
 			return true
 		}
-	case "interface":
-		if u.InterfaceConn != nil {
-			u.InterfaceConn.Close()
-			u.InterfaceConn = nil
-			log.Printf("User %s: Removed interface connection", u.ID)
+	case util.ConnUI:
+		if u.UIConn != nil {
+			u.UIConn.Close()
+			u.UIConn = nil
+			log.Printf("User %s: Removed ui connection", u.ID)
 			return true
 		}
 	}
@@ -66,7 +67,7 @@ func (u *User) RemoveConnection(connType string) bool {
 
 // HasConnections checks if user has any active connections
 func (u *User) HasConnections() bool {
-	return u.GameConn != nil || u.InterfaceConn != nil
+	return u.GameConn != nil || u.UIConn != nil
 }
 
 // BroadcastToAllConnections sends data to all active connections of this user
@@ -79,20 +80,20 @@ func (u *User) BroadcastToAllConnections(data []byte) {
 			log.Printf("User %s: GameConn buffer full, dropping message", u.ID)
 		}
 	}
-	if u.InterfaceConn != nil {
+	if u.UIConn != nil {
 		select {
-		case u.InterfaceConn.Send <- data:
+		case u.UIConn.Send <- data:
 		default:
-			log.Printf("User %s: InterfaceConn buffer full, dropping message", u.ID)
+			log.Printf("User %s: UIConn buffer full, dropping message", u.ID)
 		}
 	}
 }
 
-// BroadcastToConnectionType sends data to a specific connection type ("game" or "interface")
+// BroadcastToConnectionType sends data to a specific connection type ("game" or "ui")
 // Non-blocking: drops slow connections automatically
 func (u *User) BroadcastToConnectionType(connType string, data []byte) {
 	switch connType {
-	case "game":
+	case util.ConnGame:
 		if u.GameConn != nil {
 			select {
 			case u.GameConn.Send <- data:
@@ -100,12 +101,12 @@ func (u *User) BroadcastToConnectionType(connType string, data []byte) {
 				log.Printf("User %s: GameConn buffer full, dropping message", u.ID)
 			}
 		}
-	case "interface":
-		if u.InterfaceConn != nil {
+	case util.ConnUI:
+		if u.UIConn != nil {
 			select {
-			case u.InterfaceConn.Send <- data:
+			case u.UIConn.Send <- data:
 			default:
-				log.Printf("User %s: InterfaceConn buffer full, dropping message", u.ID)
+				log.Printf("User %s: UIConn buffer full, dropping message", u.ID)
 			}
 		}
 	default:
@@ -116,10 +117,10 @@ func (u *User) BroadcastToConnectionType(connType string, data []byte) {
 // GetConnection returns a specific connection type (for internal use)
 func (u *User) GetConnection(connType string) *client.Client {
 	switch connType {
-	case "game":
+	case util.ConnGame:
 		return u.GameConn
-	case "interface":
-		return u.InterfaceConn
+	case util.ConnUI:
+		return u.UIConn
 	default:
 		return nil
 	}
@@ -131,7 +132,7 @@ func (u *User) GetConnectionCount() int {
 	if u.GameConn != nil {
 		count++
 	}
-	if u.InterfaceConn != nil {
+	if u.UIConn != nil {
 		count++
 	}
 	return count

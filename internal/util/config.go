@@ -11,4 +11,8 @@ const (
 	PongWait       = 60 * time.Second    // Time to wait for a pong response
 	PingPeriod     = (PongWait * 9) / 10 // Frequency of ping messages
 	SendBufferSize = 256
+
+	// Connection types
+	ConnGame = "game"
+	ConnUI   = "ui"
 )
